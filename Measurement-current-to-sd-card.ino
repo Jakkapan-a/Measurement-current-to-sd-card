@@ -17,30 +17,32 @@ bool pmFlag;
 #define enter A3
 
 void EscPressed(void);
+void EscReleased(void);
 void UpPressed(void);
+void UpReleased(void);
 void DownPressed(void);
+void DownReleased(void);
 void EnterPressed(void);
+void EnterReleased(void);
 
-TcBUTTON escButton(esc, EscPressed, NULL);
-TcBUTTON upButton(up, UpPressed, NULL);
-TcBUTTON downButton(down, DownPressed, NULL);
-TcBUTTON enterButton(enter, EnterPressed, NULL);
-
+TcBUTTON escButton(esc, EscPressed, EscReleased);
+TcBUTTON upButton(up, UpPressed, UpReleased);
+TcBUTTON downButton(down, DownPressed, DownReleased);
+TcBUTTON enterButton(enter, EnterPressed, EnterReleased);
 
 #define SD_CS 10
 #define SD_MOSI 11
 #define SD_MISO 12
 #define SD_SCK 13
 
-
 //*********************** INPUT Sensor ***********************//
-/* 
+/*
  * Up to 4 boards may be connected. Addressing is as follows:
  * Board 0: Address = 0x40 Offset = binary 00000 (no jumpers required)
  * Board 1: Address = 0x41 Offset = binary 00001 (bridge A0 as in the photo above)
  * Board 2: Address = 0x44 Offset = binary 00100 (bridge A1)
  * Board 3: Address = 0x45 Offset = binary 00101 (bridge A0 & A1)
-*/
+ */
 Adafruit_INA219 ina219_A(0x40);
 
 const uint8_t SEG_DONE[] = {
@@ -71,7 +73,12 @@ const uint8_t SEG_WAIT[] = {
   SEG_G,  // -
   SEG_G,  // -
 };
-
+const uint8_t SEG_WAIT_[] = {
+  SEG_D,  // -
+  SEG_D,  // -
+  SEG_D,  // -
+  SEG_D,  // -
+};
 // TM1637 Display
 #define CLK 5
 #define DIO 6
@@ -80,6 +87,14 @@ TM1637Display display(CLK, DIO);
 int menu = 0;
 uint8_t subMenu = 3;
 bool isMenu = false;
+
+uint8_t IsNumButton = 0;
+int CountButtonPressed = 0;
+uint8_t CountButtonPressedMax = 3;
+
+uint8_t CountDownSleep = 0;
+uint8_t CountDownSleepMax = 50;
+
 
 unsigned long lastTime = 0;
 unsigned long last_time_ms = 0;
@@ -92,14 +107,22 @@ uint16_t hour = 0;
 uint16_t minute = 0;
 uint16_t second = 0;
 
+
+float current = 0;
+float voltage = 0;
+float power = 0;
+float shuntvoltage = 0;
+float loadvoltage = 0;
+String filename = "Data.csv";
+
 void setup() {
-  Serial.begin(9600);
+   Serial.begin(9600);
+  while (!Serial); // Wait for serial monitor to open
   Serial.println("Start");
-  ina219_A.begin();
+
   Wire.begin();
   display.setBrightness(5);
   display.setSegments(SEG_WAIT);
-
 
   if (!SD.begin(SD_CS)) {
     Serial.println("SD card not found");
@@ -112,14 +135,54 @@ void setup() {
       delay(500);
     }
   }
-  // Serial Plotter
-  // Serial.print("Bus_Voltage:"); Serial.print(voltage); Serial.println(",");
-  // Serial.print("Shunt_Voltage:"); Serial.print(shuntvoltage); Serial.println(",");
-  // Serial.print("Load_Voltage:"); Serial.print(loadvoltage); Serial.println(",");
-  // Serial.print("Current:"); Serial.print(current); Serial.println(",");
-  // Serial.print("Power:"); Serial.print(power); Serial.println(",");
-  // Serial.println(" ");
-  // delay(300);
+
+  Serial.println("\nI2C Scanner");
+  byte error, address;
+  int nDevices;
+
+  Serial.println("Scanning...");
+
+  nDevices = 0;
+  for (address = 1; address < 127; address++ ) {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) {
+        Serial.print("0");
+      }
+      Serial.print(address, HEX);
+      Serial.println(" !");
+
+      nDevices++;
+    } else if (error == 4) {
+      Serial.print("Unknown error at address 0x");
+      if (address < 16) {
+        Serial.print("0");
+      }
+      Serial.println(address, HEX);
+    }
+  }
+
+  if (nDevices == 0) {
+    Serial.println("No I2C devices found\n");
+  } else {
+    Serial.println("done\n");
+  }
+  
+  if (!ina219_A.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    while (1) {
+       display.setBrightness(5, true);
+      display.setSegments(SEG_WAIT_);
+      delay(500);
+      display.setBrightness(0, false);
+      display.setSegments(SEG_WAIT_);
+      delay(500);
+     }
+  }
+
 }
 
 void loop() {
@@ -128,22 +191,117 @@ void loop() {
   downButton.update();
   enterButton.update();
 
-  double current = ina219_A.getCurrent_mA();
-  double voltage = ina219_A.getBusVoltage_V();
-  double power = ina219_A.getPower_mW();
-  double shuntvoltage = ina219_A.getShuntVoltage_mV();
-  double loadvoltage = voltage + (shuntvoltage / 1000);
   myTime();
   menuDisplay();
 }
 void myTime(void) {
+  // Get time from RTC
   unsigned long currentTime = millis();
+  //--------------------------------------------------------------------------------
+  // This function is called every 1 second
   if (currentTime - lastTime >= 1000) {
+    if (CountDownSleep > 0) {
+      CountDownSleep--;
+    }
 
+    if (CountDownSleep == 1) {
+      isMenu = false;
+    }
 
+    if (IsNumButton != 0) {
+      CountButtonPressed++;
+    }
     lastTime = currentTime;
   } else if (currentTime < 1000) {
     lastTime = currentTime;
+  }
+  //--------------------------------------------------------------------------------
+  // Is button pressed for 5 seconds
+  if (IsNumButton != 0 && CountButtonPressed >= CountButtonPressedMax) {
+    switch (IsNumButton) {
+      case 1:
+        EscPressed();
+        break;
+      case 2:
+        UpPressed();
+        break;
+      case 3:
+        DownPressed();
+        break;
+      case 4:
+        EnterPressed();
+        break;
+    }
+  }
+  //--------------------------------------------------------------------------------
+  // Auto save data to SD card every 100 ms
+  if (currentTime - last_time_mss >= 100) {
+    if (!isMenu) {
+
+      SaveData();
+    }
+    last_time_mss = currentTime;
+  } else if (currentTime < 1000) {
+    last_time_mss = currentTime;
+  }
+}
+
+void SaveData() {
+  current = ina219_A.getCurrent_mA();
+  voltage = ina219_A.getBusVoltage_V();
+  power = ina219_A.getPower_mW();
+  shuntvoltage = ina219_A.getShuntVoltage_mV();
+  loadvoltage = voltage + (shuntvoltage / 1000);
+  display.showNumberDec(current, false, 4, 0);
+
+
+  year = myRTC.getYear();
+  month = myRTC.getMonth(century);
+  date = myRTC.getDate();
+  hour = myRTC.getHour(h12Flag, pmFlag);
+  minute = myRTC.getMinute();
+  second = myRTC.getSecond();
+
+  filename = "F" + String(year) + String(month) + String(date) + String(hour) + ".csv";
+
+  // // Check if file exists
+  if (!SD.exists(filename)) {
+    // Create file
+    File dataFile = SD.open(filename, FILE_WRITE);
+    dataFile.println("Date, Time,Current,Voltage,Power,Shunt Voltage,Load Voltage");
+    dataFile.close();
+  }
+
+  // // Open file
+  File dataFile = SD.open(filename, FILE_WRITE);
+  if (dataFile) {
+    dataFile.print(String(date) + "/" + String(month) + "/" + String(year) + ",");
+    dataFile.print(String(hour) + ":" + String(minute) + ":" + String(second) + ",");
+    dataFile.print(String(current) + ",");
+    dataFile.print(String(voltage) + ",");
+    dataFile.print(String(power) + ",");
+    dataFile.print(String(shuntvoltage) + ",");
+    dataFile.println(String(loadvoltage));
+    dataFile.close();
+    // Serial.println("Data saved");
+    // Serial print data
+    Serial.print(String(date) + "/" + String(month) + "/" + String(year) + ",");
+    Serial.print(String(hour) + ":" + String(minute) + ":" + String(second) + ",");
+    Serial.print(String(current) + ",");
+    Serial.print(String(voltage) + ",");
+    Serial.print(String(power) + ",");
+    Serial.print(String(shuntvoltage) + ",");
+    Serial.println(String(loadvoltage));
+  } else {
+    while (!SD.begin(SD_CS)) {
+      display.setBrightness(5, true);
+      display.setSegments(SEG_WAIT);
+      delay(200);
+      display.setBrightness(0, false);
+      display.setSegments(SEG_WAIT);
+      delay(200);
+    }
+    display.setBrightness(5, true);
   }
 }
 void EscPressed(void) {
@@ -153,6 +311,15 @@ void EscPressed(void) {
   } else {
     isMenu = false;
   }
+  if (IsNumButton == 0) {
+    IsNumButton = 1;
+    CountButtonPressed = 0;
+  }
+  CountDownSleep = CountDownSleepMax;
+}
+
+void EscReleased(void) {
+  IsNumButton = 0;
 }
 
 void UpPressed(void) {
@@ -239,6 +406,16 @@ void UpPressed(void) {
     Serial.print("Menu Up: ");
     Serial.println(menu);
   }
+
+  if (IsNumButton == 0) {
+    IsNumButton = 2;
+    CountButtonPressed = 0;
+  }
+  CountDownSleep = CountDownSleepMax;
+}
+
+void UpReleased(void) {
+  IsNumButton = 0;
 }
 
 void DownPressed(void) {
@@ -324,6 +501,15 @@ void DownPressed(void) {
       }
     }
   }
+  if (IsNumButton == 0) {
+    IsNumButton = 3;
+    CountButtonPressed = 0;
+  }
+  CountDownSleep = CountDownSleepMax;
+}
+
+void DownReleased(void) {
+  IsNumButton = 0;
 }
 
 void EnterPressed(void) {
@@ -337,6 +523,15 @@ void EnterPressed(void) {
     subMenu++;
     display.setBrightness(5);
   }
+  if (IsNumButton == 0) {
+    IsNumButton = 4;
+    CountButtonPressed = 0;
+  }
+  CountDownSleep = CountDownSleepMax;
+}
+
+void EnterReleased(void) {
+  IsNumButton = 0;
 }
 
 void menuDisplay(void) {
@@ -386,13 +581,13 @@ void menuDisplay(void) {
         }
         break;
       case 1:
-        
-        switch(subMenu){
+
+        switch (subMenu) {
           case 0:
-           display.showNumberHexEx(0xF001);
-          break;
+            display.showNumberHexEx(0xF001);
+            break;
           case 1:
-            hour = myRTC.getHour(h12Flag,pmFlag);
+            hour = myRTC.getHour(h12Flag, pmFlag);
             minute = myRTC.getMinute();
             second = myRTC.getSecond();
             Serial.print("Time: ");
@@ -402,7 +597,7 @@ void menuDisplay(void) {
             Serial.print(":");
             Serial.println(second);
             subMenu = 2;
-          break;
+            break;
           case 2:
             // Display Hour
             setBrightnessDisplay();
@@ -429,7 +624,7 @@ void menuDisplay(void) {
         break;
     }
   } else {
-    display.setSegments(SEG_WAIT);
+    // display.setSegments(SEG_WAIT);
   }
 }
 bool isBlink = false;
