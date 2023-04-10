@@ -268,7 +268,7 @@ void SaveData() {
   if (!SD.exists(filename)) {
     // Create file
     File dataFile = SD.open(filename, FILE_WRITE);
-    dataFile.println("Date, Time,Current,Voltage,Power,Shunt Voltage,Load Voltage");
+    dataFile.println("Date, Time,Current_mA,Voltage"); //,Power,Shunt Voltage,Load Voltage");
     dataFile.close();
   }
 
@@ -278,20 +278,20 @@ void SaveData() {
     dataFile.print(String(date) + "/" + String(month) + "/" + String(year) + ",");
     dataFile.print(String(hour) + ":" + String(minute) + ":" + String(second) + ",");
     dataFile.print(String(current) + ",");
-    dataFile.print(String(voltage) + ",");
-    dataFile.print(String(power) + ",");
-    dataFile.print(String(shuntvoltage) + ",");
-    dataFile.println(String(loadvoltage));
+    dataFile.println(String(voltage) + ",");
+    // dataFile.print(String(power) + ",");
+    // dataFile.print(String(shuntvoltage) + ",");
+    // dataFile.println(String(loadvoltage));
     dataFile.close();
     // Serial.println("Data saved");
     // Serial print data
     Serial.print(String(date) + "/" + String(month) + "/" + String(year) + ",");
     Serial.print(String(hour) + ":" + String(minute) + ":" + String(second) + ",");
     Serial.print(String(current) + ",");
-    Serial.print(String(voltage) + ",");
-    Serial.print(String(power) + ",");
-    Serial.print(String(shuntvoltage) + ",");
-    Serial.println(String(loadvoltage));
+    Serial.println(String(voltage) + ",");
+    // Serial.print(String(power) + ",");
+    // Serial.print(String(shuntvoltage) + ",");
+    // Serial.println(String(loadvoltage));
   } else {
     while (!SD.begin(SD_CS)) {
       display.setBrightness(5, true);
